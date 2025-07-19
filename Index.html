@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Conway's Game of Life with Wormhole Effect & MIDI Control</title>
+    <!-- Tailwind CSS CDN for modern styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Apply Inter font family globally */
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Custom CSS for the main canvas to ensure it fills its container responsively */
+        canvas {
+            background-color: #000;
+            display: block;
+            width: 100%; /* Canvas will take full width of its parent container */
+            height: 100%; /* Height will be set dynamically by JS to maintain aspect ratio */
+            touch-action: none; /* Prevent default browser touch actions like scrolling/zooming */
+        }
+        /* Hide the offscreen canvas as it's only used for drawing logic */
+        #offscreen-canvas {
+            display: none;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen flex flex-col items-center justify-center p-4">
+    <h2 class="text-3xl font-bold mb-6 text-green-400 text-center">Conway's Game of Life with Wormhole Effect & MIDI</h2>
+
+    <div class="bg-gray-800 rounded-lg shadow-xl p-6 max-w-full w-full md:w-3/4 lg:w-2/3 xl:w-1/2 flex flex-col items-center">
+        <!-- Canvas container to manage responsive sizing and aspect ratio -->
+        <div class="w-full aspect-square max-w-[768px] max-h-[768px] bg-gray-900 rounded-md overflow-hidden shadow-inner border border-gray-700">
+            <canvas id="gol-canvas" class="rounded-md"></canvas>
+        </div>
+
+        <!-- Hidden offscreen canvas for Game of Life logic -->
+        <canvas id="offscreen-canvas"></canvas>
+
+        <div id="controls" class="mt-8 flex flex-wrap justify-center gap-4 w-full">
+            <button id="start" class="px-6 py-3 bg-green-600 hover:bg-green-700 text-white font-semibold rounded-lg shadow-md transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-75">
+                Start
+            </button>
+            <button id="stop" class="px-6 py-3 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg shadow-md transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-opacity-75">
+                Stop
+            </button>
+            <button id="random" class="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg shadow-md transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-75">
+                Randomize
+            </button>
+            <button id="clear" class="px-6 py-3 bg-gray-600 hover:bg-gray-700 text-white font-semibold rounded-lg shadow-md transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-opacity-75">
+                Clear
+            </button>
+        </div>
+        <p class="text-sm text-gray-400 mt-4 text-center">
+            Use mouse wheel to zoom. Click cells to toggle. Drag mouse to rotate.
+        </p>
+        <div id="midi-status" class="mt-4 text-sm text-gray-500">
+            MIDI Status: Not connected
+        </div>
+        <div id="midi-controls-info" class="mt-2 text-xs text-gray-600 text-center">
+            MIDI Notes (e.g., C3, D3, E3, F3) can control Start, Stop, Randomize, Clear.
+            MIDI CC #7 (Volume) controls animation speed.
+        </div>
+    </div>
+
+    <script>
+        // --- Configuration ---
+        const GRID_SIZE = 64; // The Game of Life grid will be 64x64 cells (larger area)
+        // Offscreen canvas resolution for the Game of Life logic.
+        // This determines the "pixel" size for the GoL simulation.
+        const OFFSCREEN_RESOLUTION = 512; // Each cell will be 512/64 = 8 pixels (shrunk pixels)
+
+        // --- Game State Variables ---
+        let grid = Array(GRID_SIZE * GRID_SIZE).fill(0); // Initialize grid with dead cells
+        let running = false; // Flag to control animation loop
+        let animationFrameId = null; // To store requestAnimationFrame ID
+        let lastUpdateTime = 0; // For controlling update speed
+        let updateInterval = 100; // milliseconds between generations (default)
+
+        // --- Canvas Elements ---
+        const mainCanvas = document.getElementById('gol-canvas');
+        const mainCtx = mainCanvas.getContext('2d');
+
+        // Create an offscreen canvas for Game of Life calculations
+        // This canvas will hold the "true" state of the GoL grid at a fixed resolution
+        const offscreenCanvas = document.getElementById('offscreen-canvas');
+        offscreenCanvas.width = OFFSCREEN_RESOLUTION;
+        offscreenCanvas.height = OFFSCREEN_RESOLUTION;
+        const offscreenCtx = offscreenCanvas.getContext('2d');
+
+        // --- View Transformation Variables ---
+        let viewScale = 1.0; // Overall zoom level for the main canvas
+        const MIN_ZOOM = 0.1;
+        const MAX_ZOOM = 10.0;
+        const FOLD_FACTOR = 0.8; // How much each subsequent folded image shrinks (smaller for more depth)
+        const FOLD_ROTATION_INCREMENT = Math.PI / 16; // Slight rotation for each fold layer
+        const MAX_FOLDS = 8; // How many layers deep the folding effect goes (more layers for deeper tunnel)
+
+        let rotationAngle = 0; // Current rotation angle for the entire view
+        let isDragging = false; // Flag for mouse drag rotation
+        let lastMouseX = 0; // Last X position during drag
+
+        // --- MIDI Variables ---
+        let midiAccess = null;
+        const midiStatusElement = document.getElementById('midi-status');
+
+        // --- Canvas Sizing and Responsiveness ---
+        /**
+         * Sets the main canvas dimensions based on its parent container's width,
+         * maintaining a square aspect ratio.
+         * This ensures the visualizer is responsive to screen size changes.
+         */
+        function setMainCanvasSize() {
+            const container = mainCanvas.parentElement;
+            const containerWidth = container.offsetWidth;
+            mainCanvas.width = containerWidth;
+            mainCanvas.height = containerWidth;
+            draw(); // Redraw the scene after resizing
+        }
+
+        // --- Drawing Functions ---
+        /**
+         * Draws the current state of the Game of Life grid onto the offscreen canvas.
+         * Live cells are green, dead cells are dark gray.
+         */
+        function drawGameOfLifeGrid() {
+            offscreenCtx.clearRect(0, 0, offscreenCanvas.width, offscreenCanvas.height);
+            // Calculate the size of each cell on the offscreen canvas
+            const currentOffscreenCellSize = offscreenCanvas.width / GRID_SIZE;
+
+            for (let y = 0; y < GRID_SIZE; y++) {
+                for (let x = 0; x < GRID_SIZE; x++) {
+                    const i = y * GRID_SIZE + x;
+                    offscreenCtx.fillStyle = grid[i] ? "#32CD32" : "#222"; // Green for live, dark gray for dead
+                    // Draw the cell, leaving a 1-pixel gap for grid lines effect
+                    offscreenCtx.fillRect(x * currentOffscreenCellSize, y * currentOffscreenCellSize, currentOffscreenCellSize - 1, currentOffscreenCellSize - 1);
+                }
+            }
+        }
+
+        /**
+         * The main drawing function that renders the Game of Life grid
+         * and applies the folding/recursive zoom and rotation effect.
+         */
+        function draw() {
+            // Clear the main canvas for the new frame
+            mainCtx.clearRect(0, 0, mainCanvas.width, mainCanvas.height);
+
+            // First, draw the Game of Life grid onto the offscreen canvas
+            drawGameOfLifeGrid();
+
+            // Store the current transformation matrix
+            mainCtx.save();
+
+            // Move origin to the center of the canvas for rotation and scaling
+            mainCtx.translate(mainCanvas.width / 2, mainCanvas.height / 2);
+
+            // Apply global rotation
+            mainCtx.rotate(rotationAngle);
+
+            // Apply global zoom
+            mainCtx.scale(viewScale, viewScale);
+
+            // Move origin back to top-left (relative to the scaled/rotated space)
+            mainCtx.translate(-mainCanvas.width / 2, -mainCanvas.height / 2);
+
+            // Draw the offscreen canvas content onto the main canvas (the primary view)
+            mainCtx.drawImage(offscreenCanvas, 0, 0, mainCanvas.width, mainCanvas.height);
+
+            // Implement the recursive "folding" effect (Droste effect / Wormhole)
+            let currentFoldScale = 1.0;
+            for (let i = 0; i < MAX_FOLDS; i++) {
+                currentFoldScale *= FOLD_FACTOR; // Shrink for each subsequent layer
+
+                mainCtx.save(); // Save context for this fold layer
+                mainCtx.translate(mainCanvas.width / 2, mainCanvas.height / 2); // Move to center
+                mainCtx.rotate(FOLD_ROTATION_INCREMENT * (i + 1)); // Apply incremental rotation for spiral effect
+                mainCtx.scale(currentFoldScale, currentFoldScale); // Apply fold scale
+                // Draw the offscreen content, centered in the scaled/rotated space
+                mainCtx.drawImage(offscreenCanvas, -offscreenCanvas.width / 2, -offscreenCanvas.height / 2, offscreenCanvas.width, offscreenCanvas.height);
+                mainCtx.restore(); // Restore context for this fold layer
+            }
+
+            mainCtx.restore(); // Restore global transformation
+        }
+
+        // --- Game Logic ---
+        /**
+         * Calculates the next generation of the Game of Life based on its rules.
+         * (Conway's rules: underpopulation, survival, overpopulation, reproduction)
+         */
+        function nextGen() {
+            const newGrid = Array(GRID_SIZE * GRID_SIZE).fill(0);
+
+            for (let y = 0; y < GRID_SIZE; y++) {
+                for (let x = 0; x < GRID_SIZE; x++) {
+                    let neighbors = 0;
+                    // Check all 8 surrounding neighbors (including wrap-around for toroidal grid)
+                    for (let dy = -1; dy <= 1; dy++) {
+                        for (let dx = -1; dx <= 1; dx++) {
+                            if (dx === 0 && dy === 0) continue; // Skip the cell itself
+
+                            const nx = (x + dx + GRID_SIZE) % GRID_SIZE; // Wrap around horizontally
+                            const ny = (y + dy + GRID_SIZE) % GRID_SIZE; // Wrap around vertically
+
+                            neighbors += grid[ny * GRID_SIZE + nx];
+                        }
+                    }
+
+                    const i = y * GRID_SIZE + x; // Current cell's 1D index
+
+                    // Apply Game of Life rules
+                    if (grid[i]) { // If the current cell is alive
+                        if (neighbors === 2 || neighbors === 3) {
+                            newGrid[i] = 1; // Stays alive
+                        } else {
+                            newGrid[i] = 0; // Dies (underpopulation or overpopulation)
+                        }
+                    } else { // If the current cell is dead
+                        if (neighbors === 3) {
+                            newGrid[i] = 1; // Becomes alive (reproduction)
+                        } else {
+                            newGrid[i] = 0; // Stays dead
+                        }
+                    }
+                }
+            }
+            grid = newGrid; // Update the main grid with the new generation
+            draw(); // Redraw the canvas with the updated grid
+        }
+
+        /**
+         * The main animation loop for the Game of Life.
+         * Uses requestAnimationFrame for smoother animation and controls update speed.
+         */
+        function gameLoop(currentTime) {
+            if (running) {
+                // Only update the generation if enough time has passed
+                if (currentTime - lastUpdateTime > updateInterval) {
+                    nextGen();
+                    lastUpdateTime = currentTime;
+                }
+                animationFrameId = requestAnimationFrame(gameLoop);
+            }
+        }
+
+        // --- Event Listeners for Canvas Interaction ---
+        // Mouse wheel event for zooming in/out
+        mainCanvas.addEventListener('wheel', e => {
+            e.preventDefault(); // Prevent page scrolling
+            const zoomAmount = 0.1;
+            if (e.deltaY < 0) { // Zoom in (mouse wheel up)
+                viewScale += zoomAmount;
+            } else { // Zoom out (mouse wheel down)
+                viewScale -= zoomAmount;
+            }
+            // Clamp zoom level to prevent extreme values
+            viewScale = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, viewScale));
+            draw(); // Redraw with the new zoom level
+        });
+
+        // Mouse down event for initiating drag rotation
+        mainCanvas.addEventListener('mousedown', e => {
+            isDragging = true;
+            lastMouseX = e.clientX;
+            mainCanvas.style.cursor = 'grabbing'; // Change cursor to indicate dragging
+        });
+
+        // Mouse move event for performing drag rotation
+        mainCanvas.addEventListener('mousemove', e => {
+            if (isDragging) {
+                const deltaX = e.clientX - lastMouseX;
+                rotationAngle += deltaX * 0.01; // Adjust rotation speed
+                lastMouseX = e.clientX;
+                draw(); // Redraw with the new rotation
+            }
+        });
+
+        // Mouse up event for ending drag rotation
+        mainCanvas.addEventListener('mouseup', () => {
+            isDragging = false;
+            mainCanvas.style.cursor = 'grab'; // Change cursor back
+        });
+
+        // Mouse leave event to stop dragging if mouse leaves canvas
+        mainCanvas.addEventListener('mouseleave', () => {
+            isDragging = false;
+            mainCanvas.style.cursor = 'grab';
+        });
+
+        // Click event listener on main canvas to toggle cell states
+        mainCanvas.addEventListener('click', e => {
+            // Only toggle cell if not dragging (to avoid accidental toggles during rotation)
+            if (!isDragging) {
+                const rect = mainCanvas.getBoundingClientRect();
+                // Get click coordinates relative to the canvas
+                const clientX = e.clientX - rect.left;
+                const clientY = e.clientY - rect.top;
+
+                // --- Reverse transformations to find original grid coordinates ---
+                // 1. Translate coordinates to be relative to the canvas center
+                const centeredX = clientX - mainCanvas.width / 2;
+                const centeredY = clientY - mainCanvas.height / 2;
+
+                // 2. Reverse global rotation (rotate back by -rotationAngle)
+                const rotatedX = centeredX * Math.cos(-rotationAngle) - centeredY * Math.sin(-rotationAngle);
+                const rotatedY = centeredX * Math.sin(-rotationAngle) + centeredY * Math.cos(-rotationAngle);
+
+                // 3. Reverse global scaling
+                const unscaledX = rotatedX / viewScale;
+                const unscaledY = rotatedY / viewScale;
+
+                // 4. Translate back to top-left origin (relative to the unscaled, unrotated space)
+                const gridX_coord = unscaledX + mainCanvas.width / 2;
+                const gridY_coord = unscaledY + mainCanvas.height / 2;
+
+                // Calculate cell coordinates based on the offscreen canvas's cell size
+                const currentOffscreenCellSize = offscreenCanvas.width / GRID_SIZE;
+                const x = Math.floor(gridX_coord / currentOffscreenCellSize);
+                const y = Math.floor(gridY_coord / currentOffscreenCellSize);
+
+                // Ensure coordinates are within grid bounds
+                if (x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE) {
+                    const i = y * GRID_SIZE + x;
+                    grid[i] = grid[i] ? 0 : 1; // Toggle cell state
+                    draw(); // Redraw to show the toggled cell
+                }
+            }
+        });
+
+        // --- Button Event Listeners ---
+        const startButton = document.getElementById('start');
+        const stopButton = document.getElementById('stop');
+        const randomButton = document.getElementById('random');
+        const clearButton = document.getElementById('clear');
+
+        startButton.onclick = () => {
+            if (!running) {
+                running = true;
+                lastUpdateTime = performance.now(); // Initialize last update time
+                gameLoop(lastUpdateTime); // Start the animation loop
+            }
+        };
+
+        stopButton.onclick = () => {
+            running = false;
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId); // Stop the animation frame loop
+                animationFrameId = null;
+            }
+        };
+
+        randomButton.onclick = () => {
+            // Fill the grid with random live (1) or dead (0) cells (approx. 20% chance of being alive)
+            grid = grid.map(() => Math.random() > 0.8 ? 1 : 0);
+            draw(); // Redraw with the new random grid
+        };
+
+        clearButton.onclick = () => {
+            grid.fill(0); // Fill the entire grid with dead cells
+            draw(); // Redraw the cleared grid
+        };
+
+        // --- MIDI Integration ---
+        /**
+         * Initializes MIDI access and sets up listeners for MIDI messages.
+         */
+        async function setupMidi() {
+            if (!navigator.requestMIDIAccess) {
+                midiStatusElement.textContent = 'MIDI Status: Web MIDI API not supported by this browser.';
+                return;
+            }
+
+            try {
+                midiAccess = await navigator.requestMIDIAccess();
+                midiStatusElement.textContent = 'MIDI Status: Connected';
+                midiAccess.onstatechange = onMidiStateChange; // Listen for device connect/disconnect
+
+                // Set up listeners for existing input devices
+                midiAccess.inputs.forEach(input => {
+                    input.onmidimessage = onMidiMessage;
+                    console.log(`MIDI Input: ${input.name} - ${input.manufacturer}`);
+                });
+
+                if (midiAccess.inputs.size === 0) {
+                    midiStatusElement.textContent = 'MIDI Status: No MIDI input devices found.';
+                }
+
+            } catch (error) {
+                // Specific handling for SecurityError
+                if (error.name === 'SecurityError') {
+                    midiStatusElement.textContent = 'MIDI Status: Access denied. MIDI is disabled by browser security policy (e.g., in an iframe or sandbox).';
+                    console.error('Failed to get MIDI access due to security policy:', error);
+                } else {
+                    midiStatusElement.textContent = `MIDI Status: Error connecting - ${error.message}`;
+                    console.error('Failed to get MIDI access:', error);
+                }
+            }
+        }
+
+        /**
+         * Handles MIDI device connection/disconnection.
+         */
+        function onMidiStateChange(event) {
+            console.log(`MIDI State Change: ${event.port.name} ${event.port.state}`);
+            if (event.port.type === 'input') {
+                if (event.port.state === 'connected') {
+                    event.port.onmidimessage = onMidiMessage;
+                    midiStatusElement.textContent = 'MIDI Status: Device connected.';
+                } else if (event.port.state === 'disconnected') {
+                    event.port.onmidimessage = null; // Remove listener
+                    midiStatusElement.textContent = 'MIDI Status: Device disconnected.';
+                }
+            }
+        }
+
+        /**
+         * Processes incoming MIDI messages and maps them to actions.
+         * @param {MIDIMessageEvent} event - The MIDI message event.
+         */
+        function onMidiMessage(event) {
+            const data = event.data;
+            const status = data[0];
+            const byte1 = data[1];
+            const byte2 = data[2];
+
+            // console.log(`MIDI message: Status=${status.toString(16)}, Data1=${byte1}, Data2=${byte2}`);
+
+            // Note On message (0x90-0x9F, where 0x90 is channel 1, 0x91 is channel 2, etc.)
+            if ((status & 0xF0) === 0x90) {
+                const noteNumber = byte1;
+                const velocity = byte2;
+                if (velocity > 0) { // Note On
+                    handleMidiNoteOn(noteNumber);
+                }
+            }
+            // Control Change message (0xB0-0xBF)
+            else if ((status & 0xF0) === 0xB0) {
+                const controllerNumber = byte1;
+                const controllerValue = byte2;
+                handleMidiControlChange(controllerNumber, controllerValue);
+            }
+        }
+
+        /**
+         * Maps MIDI Note On messages to button clicks.
+         * @param {number} noteNumber - The MIDI note number.
+         */
+        function handleMidiNoteOn(noteNumber) {
+            // Example mapping:
+            // C3 (MIDI 60) -> Start
+            // D3 (MIDI 62) -> Stop
+            // E3 (MIDI 64) -> Randomize
+            // F3 (MIDI 65) -> Clear
+            if (noteNumber === 60) { // C3
+                startButton.click();
+            } else if (noteNumber === 62) { // D3
+                stopButton.click();
+            } else if (noteNumber === 64) { // E3
+                randomButton.click();
+            } else if (noteNumber === 65) { // F3
+                clearButton.click();
+            }
+        }
+
+        /**
+         * Maps MIDI Control Change messages to application parameters.
+         * @param {number} controllerNumber - The MIDI CC number.
+         * @param {number} controllerValue - The value (0-127) of the CC.
+         */
+        function handleMidiControlChange(controllerNumber, controllerValue) {
+            // Example mapping: CC #7 (Volume) to animation speed
+            if (controllerNumber === 7) { // Standard Volume controller
+                // Map 0-127 to a suitable interval range (e.g., 200ms down to 10ms)
+                // Invert the value so higher CC value means faster animation (smaller interval)
+                updateInterval = 200 - (controllerValue / 127) * 190; // Range from 10ms to 200ms
+                updateInterval = Math.max(10, updateInterval); // Ensure minimum interval
+                // console.log(`Animation speed (updateInterval): ${updateInterval.toFixed(2)}ms`);
+            }
+        }
+
+        // --- Initial Setup ---
+        window.onload = () => {
+            setMainCanvasSize(); // Set initial size of the main canvas
+            window.addEventListener('resize', setMainCanvasSize); // Make canvas responsive
+            mainCanvas.style.cursor = 'grab'; // Set initial cursor for dragging
+            draw(); // Perform initial draw
+            setupMidi(); // Initialize MIDI
+        };
+    </script>
+</body>
+</html>
