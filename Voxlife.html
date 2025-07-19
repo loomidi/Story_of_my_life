@@ -1,0 +1,1211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Conway's Game of Life with Custom Colors, Sonification, Dynamic Rules, Grid & 3D Voxel Modes</title>
+    <!-- Tailwind CSS CDN for modern styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Tone.js CDN for audio synthesis -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.min.js"></script>
+    <!-- Three.js CDN for 3D rendering -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- OrbitControls for Three.js camera interaction -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <style>
+        /* Apply Inter font family globally */
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Custom CSS for the main canvas to ensure it fills its container responsively */
+        canvas {
+            background-color: #000;
+            display: block;
+            width: 100%; /* Canvas will take full width of its parent container */
+            height: 100%; /* Height will be set dynamically by JS to maintain aspect ratio */
+            touch-action: none; /* Prevent default browser touch actions like scrolling/zooming */
+        }
+        /* Hide the offscreen canvas as it's only used for drawing logic */
+        #offscreen-canvas {
+            display: none;
+        }
+        /* Style for color input */
+        input[type="color"] {
+            -webkit-appearance: none;
+            -moz-appearance: none;
+            appearance: none;
+            width: 40px;
+            height: 40px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            background: none;
+            padding: 0;
+            overflow: hidden; /* Hide default color picker border */
+        }
+        input[type="color"]::-webkit-color-swatch-wrapper {
+            padding: 0;
+        }
+        input[type="color"]::-webkit-color-swatch {
+            border: none;
+            border-radius: 8px;
+        }
+        input[type="color"]::-moz-color-swatch-wrapper {
+            padding: 0;
+        }
+        input[type="color"]::-moz-color-swatch {
+            border: none;
+            border-radius: 8px;
+        }
+        /* Ensure the 3D container fills its parent and is positioned correctly */
+        #threejs-container {
+            position: absolute; /* Position over the 2D canvas */
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: none; /* Hidden by default, shown when 3D mode is active */
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen flex flex-col items-center justify-center p-4">
+    <h2 class="text-3xl font-bold mb-6 text-green-400 text-center">Conway's Game of Life Visualizer</h2>
+
+    <div class="bg-gray-800 rounded-lg shadow-xl p-6 max-w-full w-full md:w-3/4 lg:w-2/3 xl:w-1/2 flex flex-col items-center relative">
+        <!-- Canvas container to manage responsive sizing and aspect ratio -->
+        <div class="w-full aspect-square max-w-[768px] max-h-[768px] bg-gray-900 rounded-md overflow-hidden shadow-inner border border-gray-700 relative">
+            <canvas id="gol-canvas" class="rounded-md absolute top-0 left-0"></canvas>
+            <div id="threejs-container" class="rounded-md"></div>
+        </div>
+
+        <!-- Hidden offscreen canvas for Game of Life logic -->
+        <canvas id="offscreen-canvas"></canvas>
+
+        <!-- Main Controls -->
+        <div id="controls" class="mt-8 flex flex-wrap justify-center gap-4 w-full">
+            <button id="start" class="px-6 py-3 bg-green-600 hover:bg-green-700 text-white font-semibold rounded-lg shadow-md transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-75">
+                Start
+            </button>
+            <button id="stop" class="px-6 py-3 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg shadow-md transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-opacity-75">
+                Stop
+            </button>
+            <button id="random" class="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg shadow-md transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-75">
+                Randomize Cells
+            </button>
+            <button id="clear" class="px-6 py-3 bg-gray-600 hover:bg-gray-700 text-white font-semibold rounded-lg shadow-md transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-opacity-75">
+                Clear
+            </button>
+            <button id="forward-zoom" class="px-6 py-3 bg-yellow-500 hover:bg-yellow-600 text-gray-900 font-semibold rounded-lg shadow-md transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:ring-opacity-75">
+                Auto Zoom & Flow
+            </button>
+        </div>
+
+        <!-- Color Controls -->
+        <div class="mt-8 p-4 bg-gray-700 rounded-lg w-full flex flex-col items-center">
+            <h3 class="text-xl font-semibold mb-3 text-gray-200">Cell Colors</h3>
+            <div class="flex flex-wrap justify-center gap-4">
+                <div class="flex flex-col items-center">
+                    <label for="color1" class="text-sm text-gray-400 mb-1">Color 1</label>
+                    <input type="color" id="color1" value="#32CD32" class="border-2 border-gray-600">
+                </div>
+                <div class="flex flex-col items-center">
+                    <label for="color2" class="text-sm text-gray-400 mb-1">Color 2</label>
+                    <input type="color" id="color2" value="#FFD700" class="border-2 border-gray-600">
+                </div>
+                <div class="flex flex-col items-center">
+                    <label for="color3" class="text-sm text-gray-400 mb-1">Color 3</label>
+                    <input type="color" id="color3" value="#00BFFF" class="border-2 border-gray-600">
+                </div>
+                <button id="random-color" class="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white font-semibold rounded-lg shadow-md transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-opacity-75 self-end">
+                    Random Color
+                </button>
+            </div>
+        </div>
+
+        <!-- Display Mode Controls -->
+        <div class="mt-8 p-4 bg-gray-700 rounded-lg w-full flex flex-col items-center">
+            <h3 class="text-xl font-semibold mb-3 text-gray-200">Display Mode</h3>
+            <div class="flex flex-col items-center w-full max-w-xs mb-4">
+                <label for="grid-repeat-slider" class="text-sm text-gray-400 mb-1 w-full text-center">Grid Repetition: <span id="grid-repeat-value">1</span>x</label>
+                <input type="range" id="grid-repeat-slider" min="1" max="50" value="1" class="w-full">
+            </div>
+            <div class="flex flex-col items-center w-full max-w-xs">
+                <label for="3d-effect-slider" class="text-sm text-gray-400 mb-1 w-full text-center">2D to 3D Voxel: <span id="3d-effect-value">0</span>%</label>
+                <input type="range" id="3d-effect-slider" min="0" max="100" value="0" class="w-full">
+            </div>
+        </div>
+
+        <!-- Rule Controls -->
+        <div class="mt-8 p-4 bg-gray-700 rounded-lg w-full flex flex-col items-center">
+            <h3 class="text-xl font-semibold mb-3 text-gray-200">Game Rules (B/S)</h3>
+            <div class="flex flex-wrap justify-center gap-2 mb-4">
+                <div class="flex items-center gap-1">
+                    <label class="text-sm text-gray-300">Birth:</label>
+                    <input type="text" id="birth-rules" value="3" class="w-16 p-1 rounded bg-gray-800 text-gray-100 border border-gray-600 focus:outline-none focus:border-blue-500">
+                </div>
+                <div class="flex items-col items-center gap-1">
+                    <label class="text-sm text-gray-300">Survival:</label>
+                    <input type="text" id="survival-rules" value="23" class="w-16 p-1 rounded bg-gray-800 text-gray-100 border border-gray-600 focus:outline-none focus:border-blue-500">
+                </div>
+                <button id="set-rules" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg shadow-md transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-opacity-75">
+                    Apply Rules
+                </button>
+                <button id="random-rules" class="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 text-white font-semibold rounded-lg shadow-md transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:ring-opacity-75">
+                    Random Rules
+                </button>
+            </div>
+            <p class="text-xs text-gray-400">Enter numbers (0-8) for neighbors. E.g., Conway's Life is B3/S23.</p>
+        </div>
+
+
+        <!-- Sonification Station -->
+        <div class="mt-8 p-4 bg-gray-700 rounded-lg w-full flex flex-col items-center">
+            <h3 class="text-xl font-semibold mb-3 text-gray-200">Sonification Station</h3>
+            <div class="flex flex-wrap justify-center gap-4 mb-4">
+                <button id="toggle-sonification" class="px-6 py-3 bg-teal-600 hover:bg-teal-700 text-white font-semibold rounded-lg shadow-md transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:ring-opacity-75">
+                    Toggle Sound
+                </button>
+                <div class="flex flex-col items-center">
+                    <label for="frequency-slider" class="text-sm text-gray-400 mb-1">Base Frequency</label>
+                    <input type="range" id="frequency-slider" min="100" max="800" value="440" class="w-32">
+                </div>
+                <div class="flex flex-col items-center">
+                    <label for="scale-select" class="text-sm text-gray-400 mb-1">Scale</label>
+                    <select id="scale-select" class="p-1 rounded bg-gray-800 text-gray-100 border border-gray-600 focus:outline-none focus:border-blue-500">
+                        <option value="major">Major</option>
+                        <option value="minor">Minor</option>
+                        <option value="pentatonic">Pentatonic</option>
+                        <option value="chromatic">Chromatic</option>
+                    </select>
+                </div>
+                <div class="flex flex-col items-center">
+                    <label for="synth-style-select" class="text-sm text-gray-400 mb-1">Synth Style</label>
+                    <select id="synth-style-select" class="p-1 rounded bg-gray-800 text-gray-100 border border-gray-600 focus:outline-none focus:border-blue-500">
+                        <option value="sine">Sine</option>
+                        <option value="triangle">Triangle</option>
+                        <option value="sawtooth">Sawtooth</option>
+                        <option value="square">Square</option>
+                    </select>
+                </div>
+                <button id="random-sonification" class="px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white font-semibold rounded-lg shadow-md transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-opacity-75 self-end">
+                    Random Sonification
+                </button>
+            </div>
+            <p class="text-xs text-gray-400">
+                Sound is generated based on the number of live cells.
+            </p>
+        </div>
+
+
+        <p class="text-sm text-gray-400 mt-4 text-center">
+            Use mouse wheel to zoom. Click cells to toggle. Drag mouse to rotate.
+            Touch: Single finger to pan, two fingers to pinch-zoom.
+        </p>
+        <div id="midi-status" class="mt-4 text-sm text-gray-500">
+            MIDI Status: Not connected (may be restricted by browser security policy)
+        </div>
+        <div id="midi-controls-info" class="mt-2 text-xs text-gray-600 text-center">
+            MIDI Notes (e.g., C3, D3, E3, F3) can control Start, Stop, Randomize, Clear.
+            MIDI CC #7 (Volume) controls animation speed.
+        </div>
+    </div>
+
+    <script>
+        // --- Configuration ---
+        const GRID_SIZE = 64; // The Game of Life grid will be 64x64 cells
+        const OFFSCREEN_RESOLUTION = 512; // Each cell will be 512/64 = 8 pixels
+
+        // --- Game State Variables ---
+        let grid = Array(GRID_SIZE * GRID_SIZE).fill(0); // Initialize grid with dead cells
+        let running = false; // Flag to control animation loop
+        let animationFrameId = null; // To store requestAnimationFrame ID
+        let lastUpdateTime = 0; // For controlling update speed
+        let updateInterval = 100; // milliseconds between generations (default)
+        let currentLiveCellColors = ["#32CD32", "#FFD700", "#00BFFF"]; // Array of live cell colors
+
+        // Game of Life Rules (B/S notation - Birth / Survival)
+        // Default: Conway's Game of Life (B3/S23)
+        let birthRules = [3];
+        let survivalRules = [2, 3];
+
+        // --- Canvas Elements ---
+        const mainCanvas = document.getElementById('gol-canvas');
+        const mainCtx = mainCanvas.getContext('2d');
+        const offscreenCanvas = document.getElementById('offscreen-canvas');
+        offscreenCanvas.width = OFFSCREEN_RESOLUTION;
+        offscreenCanvas.height = OFFSCREEN_RESOLUTION;
+        const offscreenCtx = offscreenCanvas.getContext('2d');
+
+        // --- View Transformation Variables (2D) ---
+        let viewScale = 1.0; // Overall zoom level for the main canvas
+        const MIN_ZOOM = 0.1;
+        const MAX_ZOOM = 10.0; // This max zoom is for manual zoom, auto zoom can go beyond
+        const FOLD_FACTOR = 0.8; // How much each subsequent folded image shrinks
+        const FOLD_ROTATION_INCREMENT = Math.PI / 16; // Slight rotation for each fold layer
+        const MAX_FOLDS = 8; // How many layers deep the folding effect goes
+
+        let rotationAngle = 0; // Current rotation angle for the entire view
+        let isMouseDragging = false; // Flag for mouse drag rotation
+        let lastMouseX = 0; // Last X position during mouse drag
+
+        let panX = 0; // Current X translation for panning
+        let panY = 0; // Current Y translation for panning
+        let lastPanTouchX = 0;
+        let lastPanTouchY = 0;
+        let initialPinchDistance = 0;
+        let initialViewScale = 1.0;
+        let isPinching = false;
+        let isSingleTouchPanning = false;
+
+        let isAutoZooming = false;
+        const autoZoomSpeed = 0.005; // Speed for continuous forward zoom
+        const autoRotateSpeed = 0.01; // Speed for continuous rotation flow
+
+        // --- Display Mode Variables ---
+        let gridRepeatCount = 1; // Number of times to repeat the grid (1 for single image, >1 for grid)
+        let threeDStrength = 0; // 0 for 2D, 100 for full 3D
+
+        // --- Three.js Variables ---
+        let scene, camera, renderer, controls;
+        let instancedMesh;
+        const dummy = new THREE.Object3D(); // Helper for updating instance matrices
+        const color = new THREE.Color(); // Helper for updating instance colors
+        const voxelSize = 1; // Size of each voxel in 3D space
+        const voxelGap = 0.1; // Gap between voxels
+
+        // --- MIDI Variables ---
+        let midiAccess = null;
+        const midiStatusElement = document.getElementById('midi-status');
+
+        // --- Sonification Variables (Tone.js) ---
+        let synth = null;
+        let sonificationEnabled = false;
+        let baseFrequency = 440; // Hz
+        let currentScale = 'major';
+        let currentSynthStyle = 'sine';
+        let lastLiveCellCount = 0; // To track changes for sonification trigger
+
+        // Define musical scales (MIDI note numbers relative to root)
+        const scales = {
+            'major': [0, 2, 4, 5, 7, 9, 11],
+            'minor': [0, 2, 3, 5, 7, 8, 10],
+            'pentatonic': [0, 2, 4, 7, 9],
+            'chromatic': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+        };
+
+        // --- Canvas Sizing and Responsiveness ---
+        /**
+         * Sets the main canvas dimensions and Three.js renderer size based on its parent container's width,
+         * maintaining a square aspect ratio.
+         */
+        function setMainCanvasSize() {
+            const container = mainCanvas.parentElement;
+            const containerWidth = container.offsetWidth;
+            mainCanvas.width = containerWidth;
+            mainCanvas.height = containerWidth;
+
+            if (renderer) {
+                renderer.setSize(containerWidth, containerWidth);
+                camera.aspect = containerWidth / containerWidth;
+                camera.updateProjectionMatrix();
+                controls.handleResize(); // Update OrbitControls on resize
+            }
+            draw(); // Redraw the scene after resizing
+        }
+
+        // --- Drawing Functions (2D) ---
+        /**
+         * Draws the current state of the Game of Life grid onto the offscreen canvas.
+         * Live cells cycle through `currentLiveCellColors`, dead cells are dark gray.
+         */
+        function drawGameOfLifeGrid() {
+            offscreenCtx.clearRect(0, 0, offscreenCanvas.width, offscreenCanvas.height);
+            const currentOffscreenCellSize = offscreenCanvas.width / GRID_SIZE;
+
+            for (let y = 0; y < GRID_SIZE; y++) {
+                for (let x = 0; x < GRID_SIZE; x++) {
+                    const i = y * GRID_SIZE + x;
+                    if (grid[i]) {
+                        offscreenCtx.fillStyle = currentLiveCellColors[(x + y) % currentLiveCellColors.length];
+                    } else {
+                        offscreenCtx.fillStyle = "#222"; // Dead cell color
+                    }
+                    offscreenCtx.fillRect(x * currentOffscreenCellSize, y * currentOffscreenCellSize, currentOffscreenCellSize - 1, currentOffscreenCellSize - 1);
+                }
+            }
+        }
+
+        /**
+         * The main 2D drawing function that renders the Game of Life grid
+         * and applies the folding/recursive zoom or grid repetition effect.
+         */
+        function draw() {
+            mainCtx.clearRect(0, 0, mainCanvas.width, mainCanvas.height);
+            drawGameOfLifeGrid(); // Draw the GoL grid to the offscreen canvas
+
+            mainCtx.save();
+            // Apply pan first, so the entire scene shifts
+            mainCtx.translate(panX, panY);
+
+            // If gridRepeatCount > 1, draw a grid of images
+            if (gridRepeatCount > 1) {
+                const numCols = Math.ceil(Math.sqrt(gridRepeatCount));
+                const numRows = Math.ceil(gridRepeatCount / numCols);
+                const totalGridWidth = mainCanvas.width;
+                const totalGridHeight = mainCanvas.height;
+                const singleImageWidth = totalGridWidth / numCols;
+                const singleImageHeight = totalGridHeight / numRows;
+
+                for (let r = 0; r < numRows; r++) {
+                    for (let c = 0; c < numCols; c++) {
+                        const index = r * numCols + c;
+                        if (index < gridRepeatCount) {
+                            mainCtx.drawImage(offscreenCanvas,
+                                c * singleImageWidth, r * singleImageHeight,
+                                singleImageWidth, singleImageHeight);
+                        }
+                    }
+                }
+            } else { // Else, draw the wormhole effect
+                // Move origin to the center of the canvas for rotation and scaling
+                mainCtx.translate(mainCanvas.width / 2, mainCanvas.height / 2);
+                mainCtx.rotate(rotationAngle);
+                mainCtx.scale(viewScale, viewScale);
+                mainCtx.translate(-mainCanvas.width / 2, -mainCanvas.height / 2); // Move origin back
+
+                // Draw the offscreen canvas content onto the main canvas (the primary view)
+                mainCtx.drawImage(offscreenCanvas, 0, 0, mainCanvas.width, mainCanvas.height);
+
+                // Implement the recursive "folding" effect (Droste effect / Wormhole)
+                let currentFoldScale = 1.0;
+                for (let i = 0; i < MAX_FOLDS; i++) {
+                    currentFoldScale *= FOLD_FACTOR;
+                    mainCtx.save(); // Save context for this fold layer
+                    mainCtx.translate(mainCanvas.width / 2, mainCanvas.height / 2); // Move to center for folding
+                    mainCtx.rotate(FOLD_ROTATION_INCREMENT * (i + 1)); // Apply incremental rotation for spiral effect
+                    mainCtx.scale(currentFoldScale, currentFoldScale); // Apply fold scale
+                    // Draw the offscreen content, centered in the scaled/rotated space
+                    mainCtx.drawImage(offscreenCanvas, -offscreenCanvas.width / 2, -offscreenCanvas.height / 2, offscreenCanvas.width, offscreenCanvas.height);
+                    mainCtx.restore(); // Restore context for this fold layer
+                }
+            }
+            mainCtx.restore();
+        }
+
+        // --- Three.js (3D) Functions ---
+        /**
+         * Initializes the Three.js scene, camera, renderer, and instanced mesh for voxels.
+         */
+        function init3D() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x222222); // Match body background
+
+            camera = new THREE.PerspectiveCamera(75, 1, 0.1, 1000);
+            camera.position.set(GRID_SIZE / 2, GRID_SIZE / 2, GRID_SIZE * 1.5); // Position camera above and slightly in front of grid
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(mainCanvas.width, mainCanvas.height); // Initial size
+            document.getElementById('threejs-container').appendChild(renderer.domElement);
+
+            // Add ambient light
+            const ambientLight = new THREE.AmbientLight(0x404040); // soft white light
+            scene.add(ambientLight);
+
+            // Add directional light
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
+            directionalLight.position.set(GRID_SIZE, GRID_SIZE, GRID_SIZE);
+            scene.add(directionalLight);
+
+            // Create a single geometry and material for all instances
+            const geometry = new THREE.BoxGeometry(voxelSize, voxelSize, voxelSize);
+            const material = new THREE.MeshLambertMaterial({ vertexColors: true }); // Enable vertex colors
+
+            // Create an InstancedMesh
+            instancedMesh = new THREE.InstancedMesh(geometry, material, GRID_SIZE * GRID_SIZE);
+            scene.add(instancedMesh);
+
+            // Initialize all instances to be hidden (scale 0)
+            for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
+                dummy.position.set(0, 0, 0);
+                dummy.scale.set(0, 0, 0);
+                dummy.updateMatrix();
+                instancedMesh.setMatrixAt(i, dummy.matrix);
+                instancedMesh.setColorAt(i, color.set(0x000000)); // Set black color
+            }
+            instancedMesh.instanceMatrix.needsUpdate = true;
+            instancedMesh.instanceColor.needsUpdate = true;
+
+            // OrbitControls for 3D camera interaction
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true; // Animate damping
+            controls.dampingFactor = 0.05;
+            controls.screenSpacePanning = false;
+            controls.minDistance = GRID_SIZE / 4;
+            controls.maxDistance = GRID_SIZE * 3;
+            controls.target.set(GRID_SIZE / 2, GRID_SIZE / 2, 0); // Center target on the grid
+            controls.update();
+        }
+
+        /**
+         * Updates the positions, scales, and colors of the 3D voxels based on the Game of Life grid.
+         */
+        function update3DVoxels() {
+            const halfGridSize = GRID_SIZE / 2;
+            const currentVoxelZScale = threeDStrength / 100; // 0 to 1 for Z-scale
+
+            for (let y = 0; y < GRID_SIZE; y++) {
+                for (let x = 0; x < GRID_SIZE; x++) {
+                    const i = y * GRID_SIZE + x;
+                    const isAlive = grid[i];
+
+                    dummy.position.set(
+                        x * (voxelSize + voxelGap) + voxelSize / 2,
+                        y * (voxelSize + voxelGap) + voxelSize / 2,
+                        0 // All voxels start at Z=0 for the 2D plane feel
+                    );
+
+                    if (isAlive) {
+                        dummy.scale.set(voxelSize, voxelSize, voxelSize * currentVoxelZScale);
+                        // Convert hex color to THREE.Color
+                        color.set(currentLiveCellColors[(x + y) % currentLiveCellColors.length]);
+                    } else {
+                        dummy.scale.set(0, 0, 0); // Hide dead cells
+                        color.set(0x000000); // Set black color for dead cells (though hidden by scale 0)
+                    }
+
+                    dummy.updateMatrix();
+                    instancedMesh.setMatrixAt(i, dummy.matrix);
+                    instancedMesh.setColorAt(i, color);
+                }
+            }
+            instancedMesh.instanceMatrix.needsUpdate = true;
+            instancedMesh.instanceColor.needsUpdate = true;
+        }
+
+        /**
+         * Renders the Three.js scene.
+         */
+        function render3D() {
+            update3DVoxels(); // Update voxel states
+            controls.update(); // Update camera controls
+            renderer.render(scene, camera); // Render the scene
+        }
+
+        // --- Game Logic ---
+        /**
+         * Calculates the next generation of the Game of Life based on its dynamic rules.
+         */
+        function nextGen() {
+            const newGrid = Array(GRID_SIZE * GRID_SIZE).fill(0);
+            let currentLiveCellCount = 0;
+
+            for (let y = 0; y < GRID_SIZE; y++) {
+                for (let x = 0; x < GRID_SIZE; x++) {
+                    let neighbors = 0;
+                    for (let dy = -1; dy <= 1; dy++) {
+                        for (let dx = -1; dx <= 1; dx++) {
+                            if (dx === 0 && dy === 0) continue;
+
+                            const nx = (x + dx + GRID_SIZE) % GRID_SIZE;
+                            const ny = (y + dy + GRID_SIZE) % GRID_SIZE;
+
+                            neighbors += grid[ny * GRID_SIZE + nx];
+                        }
+                    }
+
+                    const i = y * GRID_SIZE + x;
+
+                    if (grid[i]) { // If the current cell is alive
+                        if (survivalRules.includes(neighbors)) {
+                            newGrid[i] = 1; // Stays alive
+                            currentLiveCellCount++;
+                        } else {
+                            newGrid[i] = 0; // Dies
+                        }
+                    } else { // If the current cell is dead
+                        if (birthRules.includes(neighbors)) {
+                            newGrid[i] = 1; // Becomes alive
+                            currentLiveCellCount++;
+                        } else {
+                            newGrid[i] = 0; // Stays dead
+                        }
+                    }
+                }
+            }
+            grid = newGrid;
+
+            // Sonification trigger
+            if (sonificationEnabled && currentLiveCellCount !== lastLiveCellCount) {
+                playSonification(currentLiveCellCount);
+            }
+            lastLiveCellCount = currentLiveCellCount;
+        }
+
+        /**
+         * The main animation loop for the Game of Life and continuous effects.
+         */
+        function mainAnimationLoop(currentTime) {
+            if (running) {
+                if (currentTime - lastUpdateTime > updateInterval) {
+                    nextGen(); // Updates grid and triggers sonification
+                    lastUpdateTime = currentTime;
+                }
+            }
+
+            if (isAutoZooming) {
+                viewScale += autoZoomSpeed;
+                rotationAngle += autoRotateSpeed; // Add continuous rotation for flow
+                // No upper clamp for viewScale here to allow "infinite" zoom
+            }
+
+            // Determine which renderer to use based on 3D strength
+            if (threeDStrength > 0) {
+                mainCanvas.style.display = 'none';
+                document.getElementById('threejs-container').style.display = 'block';
+                render3D();
+            } else {
+                mainCanvas.style.display = 'block';
+                document.getElementById('threejs-container').style.display = 'none';
+                draw(); // Redraw 2D canvas
+            }
+
+            animationFrameId = requestAnimationFrame(mainAnimationLoop);
+        }
+
+        // --- Event Listeners for Canvas Interaction ---
+        // Mouse wheel event for zooming in/out (2D mode only)
+        mainCanvas.addEventListener('wheel', e => {
+            if (threeDStrength === 0) { // Only apply in 2D mode
+                e.preventDefault();
+                const zoomAmount = 0.1;
+                if (e.deltaY < 0) {
+                    viewScale += zoomAmount;
+                } else {
+                    viewScale -= zoomAmount;
+                }
+                viewScale = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, viewScale));
+                draw();
+            }
+        });
+
+        // Mouse down event for initiating drag rotation (2D mode only)
+        mainCanvas.addEventListener('mousedown', e => {
+            if (threeDStrength === 0) { // Only apply in 2D mode
+                isMouseDragging = true;
+                lastMouseX = e.clientX;
+                mainCanvas.style.cursor = 'grabbing';
+            }
+        });
+
+        // Mouse move event for performing drag rotation (2D mode only)
+        mainCanvas.addEventListener('mousemove', e => {
+            if (threeDStrength === 0 && isMouseDragging) { // Only apply in 2D mode
+                const deltaX = e.clientX - lastMouseX;
+                rotationAngle += deltaX * 0.01;
+                lastMouseX = e.clientX;
+                draw();
+            }
+        });
+
+        // Mouse up event for ending drag rotation (2D mode only)
+        mainCanvas.addEventListener('mouseup', () => {
+            if (threeDStrength === 0) { // Only apply in 2D mode
+                isMouseDragging = false;
+                mainCanvas.style.cursor = 'grab';
+            }
+        });
+
+        // Mouse leave event to stop dragging if mouse leaves canvas (2D mode only)
+        mainCanvas.addEventListener('mouseleave', () => {
+            if (threeDStrength === 0) { // Only apply in 2D mode
+                isMouseDragging = false;
+                mainCanvas.style.cursor = 'grab';
+            }
+        });
+
+        // Touch events for pan and zoom (2D mode only)
+        mainCanvas.addEventListener('touchstart', e => {
+            if (threeDStrength === 0) { // Only apply in 2D mode
+                e.preventDefault();
+                if (e.touches.length === 1) {
+                    isSingleTouchPanning = true;
+                    lastPanTouchX = e.touches[0].clientX;
+                    lastPanTouchY = e.touches[0].clientY;
+                } else if (e.touches.length === 2) {
+                    isPinching = true;
+                    isSingleTouchPanning = false; // Disable pan if pinching
+                    const touch1 = e.touches[0];
+                    const touch2 = e.touches[1];
+                    initialPinchDistance = Math.hypot(touch2.clientX - touch1.clientX, touch2.clientY - touch1.clientY);
+                    initialViewScale = viewScale; // Store scale at the start of pinch
+                }
+            }
+        }, { passive: false });
+
+        mainCanvas.addEventListener('touchmove', e => {
+            if (threeDStrength === 0) { // Only apply in 2D mode
+                e.preventDefault();
+                if (isPinching && e.touches.length === 2) {
+                    const touch1 = e.touches[0];
+                    const touch2 = e.touches[1];
+                    const currentPinchDistance = Math.hypot(touch2.clientX - touch1.clientX, touch2.clientY - touch1.clientY);
+                    const scaleFactor = currentPinchDistance / initialPinchDistance;
+                    viewScale = initialViewScale * scaleFactor;
+                    viewScale = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, viewScale)); // Clamp zoom
+                    draw();
+                } else if (isSingleTouchPanning && e.touches.length === 1) {
+                    const touch = e.touches[0];
+                    const deltaX = touch.clientX - lastPanTouchX;
+                    const deltaY = touch.clientY - lastPanTouchY;
+                    panX += deltaX;
+                    panY += deltaY;
+                    lastPanTouchX = touch.clientX;
+                    lastPanTouchY = touch.clientY;
+                    draw();
+                }
+            }
+        }, { passive: false });
+
+        mainCanvas.addEventListener('touchend', e => {
+            if (threeDStrength === 0) { // Only apply in 2D mode
+                isSingleTouchPanning = false;
+                isPinching = false;
+                if (e.touches.length === 0) {
+                    mainCanvas.style.cursor = 'grab';
+                }
+            }
+        });
+
+        mainCanvas.addEventListener('touchcancel', e => {
+            if (threeDStrength === 0) { // Only apply in 2D mode
+                isSingleTouchPanning = false;
+                isPinching = false;
+                if (e.touches.length === 0) {
+                    mainCanvas.style.cursor = 'grab';
+                }
+            }
+        });
+
+
+        // Click event listener on main canvas to toggle cell states (2D mode only)
+        mainCanvas.addEventListener('click', e => {
+            if (threeDStrength === 0) { // Only apply in 2D mode
+                // Only toggle cell if not dragging (mouse) or panning/pinching (touch)
+                if (!isMouseDragging && !isSingleTouchPanning && !isPinching) {
+                    const rect = mainCanvas.getBoundingClientRect();
+                    const clientX = e.clientX - rect.left;
+                    const clientY = e.clientY - rect.top;
+
+                    // --- Reverse transformations to find original grid coordinates ---
+                    // 1. Reverse global pan
+                    const unpannedX = clientX - panX;
+                    const unpannedY = clientY - panY;
+
+                    // 2. Translate coordinates to be relative to the canvas center (after unpanning)
+                    const centeredX = unpannedX - mainCanvas.width / 2;
+                    const centeredY = unpannedY - mainCanvas.height / 2;
+
+                    // 3. Reverse global rotation (rotate back by -rotationAngle)
+                    const rotatedX = centeredX * Math.cos(-rotationAngle) - centeredY * Math.sin(-rotationAngle);
+                    const rotatedY = centeredX * Math.sin(-rotationAngle) + centeredY * Math.cos(-rotationAngle);
+
+                    // 4. Reverse global scaling
+                    const unscaledX = rotatedX / viewScale;
+                    const unscaledY = rotatedY / viewScale;
+
+                    // 5. Translate back to top-left origin (relative to the unscaled, unrotated space)
+                    const gridX_coord = unscaledX + mainCanvas.width / 2;
+                    const gridY_coord = unscaledY + mainCanvas.height / 2;
+
+                    // Calculate cell coordinates based on the offscreen canvas's cell size
+                    const currentOffscreenCellSize = offscreenCanvas.width / GRID_SIZE;
+                    const x = Math.floor(gridX_coord / currentOffscreenCellSize);
+                    const y = Math.floor(gridY_coord / currentOffscreenCellSize);
+
+                    // Ensure coordinates are within grid bounds
+                    if (x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE) {
+                        const i = y * GRID_SIZE + x;
+                        grid[i] = grid[i] ? 0 : 1; // Toggle cell state
+                        draw(); // Redraw to show the toggled cell
+                    }
+                }
+            }
+        });
+
+        // --- Button Event Listeners ---
+        const startButton = document.getElementById('start');
+        const stopButton = document.getElementById('stop');
+        const randomButton = document.getElementById('random');
+        const clearButton = document.getElementById('clear');
+        const forwardZoomButton = document.getElementById('forward-zoom');
+
+        startButton.onclick = () => {
+            if (!running) {
+                running = true;
+                lastUpdateTime = performance.now();
+                // Ensure the main animation loop is running
+                if (!animationFrameId) {
+                    animationFrameId = requestAnimationFrame(mainAnimationLoop);
+                }
+            }
+        };
+
+        stopButton.onclick = () => {
+            running = false;
+            // Only cancel animation frame if nothing else is active
+            if (!isAutoZooming) {
+                if (animationFrameId) {
+                    cancelAnimationFrame(animationFrameId);
+                    animationFrameId = null;
+                }
+            }
+        };
+
+        randomButton.onclick = () => {
+            grid = grid.map(() => Math.random() > 0.8 ? 1 : 0);
+            draw();
+        };
+
+        clearButton.onclick = () => {
+            grid.fill(0);
+            draw();
+        };
+
+        // Forward Zoom Button
+        forwardZoomButton.addEventListener('mousedown', () => {
+            isAutoZooming = true;
+            // Ensure the main animation loop is running
+            if (!animationFrameId) {
+                animationFrameId = requestAnimationFrame(mainAnimationLoop);
+            }
+        });
+        forwardZoomButton.addEventListener('mouseup', () => {
+            isAutoZooming = false;
+            if (!running) { // If game is also stopped, cancel animation frame
+                if (animationFrameId) {
+                    cancelAnimationFrame(animationFrameId);
+                    animationFrameId = null;
+                }
+            }
+        });
+        forwardZoomButton.addEventListener('mouseleave', () => { // Stop if mouse leaves button
+            isAutoZooming = false;
+            if (!running) {
+                if (animationFrameId) {
+                    cancelAnimationFrame(animationFrameId);
+                    animationFrameId = null;
+                }
+            }
+        });
+        forwardZoomButton.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            isAutoZooming = true;
+            if (!animationFrameId) {
+                animationFrameId = requestAnimationFrame(mainAnimationLoop);
+            }
+        }, { passive: false });
+        forwardZoomButton.addEventListener('touchend', () => {
+            isAutoZooming = false;
+            if (!running) {
+                if (animationFrameId) {
+                    cancelAnimationFrame(animationFrameId);
+                    animationFrameId = null;
+                }
+            }
+        });
+        forwardZoomButton.addEventListener('touchcancel', () => {
+            isAutoZooming = false;
+            if (!running) {
+                if (animationFrameId) {
+                    cancelAnimationFrame(animationFrameId);
+                    animationFrameId = null;
+                }
+            }
+        });
+
+
+        // --- Color Controls ---
+        const color1Input = document.getElementById('color1');
+        const color2Input = document.getElementById('color2');
+        const color3Input = document.getElementById('color3');
+        const randomColorButton = document.getElementById('random-color');
+
+        // Function to update the currentLiveCellColors array from input values
+        function updateLiveCellColors() {
+            currentLiveCellColors = [color1Input.value, color2Input.value, color3Input.value];
+            draw(); // Redraw with new colors
+        }
+
+        color1Input.onchange = updateLiveCellColors;
+        color2Input.onchange = updateLiveCellColors;
+        color3Input.onchange = updateLiveCellColors;
+
+        randomColorButton.onclick = () => {
+            const randomHexColor = '#' + Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0');
+            // Randomly pick one of the three color inputs to update
+            const colorInputs = [color1Input, color2Input, color3Input];
+            const randomInput = colorInputs[Math.floor(Math.random() * colorInputs.length)];
+            randomInput.value = randomHexColor;
+            updateLiveCellColors(); // Update the array and redraw
+        };
+
+        // --- Display Mode Controls ---
+        const gridRepeatSlider = document.getElementById('grid-repeat-slider');
+        const gridRepeatValueSpan = document.getElementById('grid-repeat-value');
+        const threeDEffectSlider = document.getElementById('3d-effect-slider');
+        const threeDEffectValueSpan = document.getElementById('3d-effect-value');
+
+        gridRepeatSlider.oninput = () => {
+            gridRepeatCount = parseInt(gridRepeatSlider.value);
+            gridRepeatValueSpan.textContent = gridRepeatCount;
+            draw(); // Redraw to reflect grid changes
+        };
+
+        threeDEffectSlider.oninput = () => {
+            threeDStrength = parseInt(threeDEffectSlider.value);
+            threeDEffectValueSpan.textContent = threeDStrength;
+            // The mainAnimationLoop will handle switching between 2D/3D renderers
+        };
+
+
+        // --- Rule Controls ---
+        const birthRulesInput = document.getElementById('birth-rules');
+        const survivalRulesInput = document.getElementById('survival-rules');
+        const setRulesButton = document.getElementById('set-rules');
+        const randomRulesButton = document.getElementById('random-rules');
+
+        /**
+         * Parses a string of numbers (e.g., "23") into an array of numbers ([2, 3]).
+         * Filters out non-numeric characters and ensures numbers are 0-8.
+         * @param {string} inputString - The string to parse.
+         * @returns {number[]} An array of valid rule numbers.
+         */
+        function parseRules(inputString) {
+            return inputString.split('').map(Number).filter(n => n >= 0 && n <= 8);
+        }
+
+        setRulesButton.onclick = () => {
+            birthRules = parseRules(birthRulesInput.value);
+            survivalRules = parseRules(survivalRulesInput.value);
+            console.log("Applied Rules:", { birth: birthRules, survival: survivalRules });
+        };
+
+        randomRulesButton.onclick = () => {
+            const generateRandomRuleSet = () => {
+                const rules = [];
+                const count = Math.floor(Math.random() * 4) + 1; // 1 to 4 rules
+                while (rules.length < count) {
+                    const num = Math.floor(Math.random() * 9); // 0-8
+                    if (!rules.includes(num)) {
+                        rules.push(num);
+                    }
+                }
+                return rules.sort((a, b) => a - b).join('');
+            };
+
+            birthRulesInput.value = generateRandomRuleSet();
+            survivalRulesInput.value = generateRandomRuleSet();
+            setRulesButton.click(); // Apply the randomly generated rules
+        };
+
+
+        // --- Sonification Station ---
+        const toggleSonificationButton = document.getElementById('toggle-sonification');
+        const frequencySlider = document.getElementById('frequency-slider');
+        const scaleSelect = document.getElementById('scale-select');
+        const synthStyleSelect = document.getElementById('synth-style-select');
+        const randomSonificationButton = document.getElementById('random-sonification');
+
+        /**
+         * Initializes the Tone.js synthesizer.
+         */
+        function initializeSynth() {
+            if (synth) {
+                synth.dispose(); // Dispose previous synth if exists
+            }
+            synth = new Tone.Synth({
+                oscillator: { type: currentSynthStyle },
+                envelope: {
+                    attack: 0.01,
+                    decay: 0.1,
+                    sustain: 0.2,
+                    release: 0.5,
+                }
+            }).toDestination();
+        }
+
+        initializeSynth(); // Initialize synth on load
+
+        toggleSonificationButton.onclick = async () => {
+            if (sonificationEnabled) {
+                sonificationEnabled = false;
+                await Tone.stop(); // Stop all Tone.js audio
+                console.log("Sonification OFF");
+            } else {
+                // Start Tone.js context if not already started (required for user interaction)
+                await Tone.start();
+                sonificationEnabled = true;
+                console.log("Sonification ON");
+            }
+        };
+
+        frequencySlider.oninput = () => {
+            baseFrequency = parseFloat(frequencySlider.value);
+        };
+
+        scaleSelect.onchange = () => {
+            currentScale = scaleSelect.value;
+        };
+
+        synthStyleSelect.onchange = () => {
+            currentSynthStyle = synthStyleSelect.value;
+            initializeSynth(); // Re-initialize synth with new waveform
+        };
+
+        randomSonificationButton.onclick = () => {
+            // Randomize base frequency
+            frequencySlider.value = Math.floor(Math.random() * (800 - 100 + 1)) + 100;
+            baseFrequency = parseFloat(frequencySlider.value);
+
+            // Randomize scale
+            const scaleKeys = Object.keys(scales);
+            scaleSelect.value = scaleKeys[Math.floor(Math.random() * scaleKeys.length)];
+            currentScale = scaleSelect.value;
+
+            // Randomize synth style
+            const synthStyles = ['sine', 'triangle', 'sawtooth', 'square'];
+            synthStyleSelect.value = synthStyles[Math.floor(Math.random() * synthStyles.length)];
+            currentSynthStyle = synthStyleSelect.value;
+
+            initializeSynth(); // Apply new synth style
+            console.log("Randomized Sonification Settings:", {
+                frequency: baseFrequency,
+                scale: currentScale,
+                style: currentSynthStyle
+            });
+        };
+
+
+        /**
+         * Plays a note based on the number of live cells.
+         * Maps live cell count to a note within the selected scale.
+         * @param {number} liveCells - The current number of live cells.
+         */
+        function playSonification(liveCells) {
+            if (!sonificationEnabled || !synth) return;
+
+            // Map liveCells (0 to GRID_SIZE*GRID_SIZE) to an index within the scale
+            const scaleNotes = scales[currentScale];
+            const scaleLength = scaleNotes.length;
+
+            if (scaleLength === 0) return; // Avoid division by zero
+
+            // Normalize live cell count to a value between 0 and 1
+            const normalizedCount = liveCells / (GRID_SIZE * GRID_SIZE);
+
+            // Map normalized count to an index within the scale, cycling through octaves
+            const octave = Math.floor(normalizedCount * 3); // Play across 3 octaves
+            const noteIndex = Math.floor(normalizedCount * scaleLength * 5) % scaleLength; // Cycle through notes more frequently
+
+            const midiNote = 60 + (octave * 12) + scaleNotes[noteIndex]; // Base MIDI note (C4 = 60) + octave + scale offset
+            const frequency = Tone.Midi(midiNote).toFrequency();
+
+            // Adjust frequency based on the baseFrequency slider
+            const finalFrequency = frequency * (baseFrequency / 440); // 440Hz is A4
+
+            synth.triggerAttackRelease(finalFrequency, "8n"); // Play note for an 8th note duration
+        }
+
+
+        // --- MIDI Integration ---
+        /**
+         * Initializes MIDI access and sets up listeners for MIDI messages.
+         */
+        async function setupMidi() {
+            // This error typically occurs when the Web MIDI API is disabled by a browser's
+            // security policy, often in sandboxed iframes or specific browser configurations.
+            // It is not a bug in the JavaScript code itself and cannot be fixed programmatically.
+            if (!navigator.requestMIDIAccess) {
+                midiStatusElement.textContent = 'MIDI Status: Web MIDI API not supported by this browser.';
+                console.warn('Web MIDI API is not supported by this browser.');
+                return;
+            }
+
+            try {
+                midiAccess = await navigator.requestMIDIAAccess();
+                midiStatusElement.textContent = 'MIDI Status: Connected';
+                midiAccess.onstatechange = onMidiStateChange; // Listen for device connect/disconnect
+
+                // Set up listeners for existing input devices
+                midiAccess.inputs.forEach(input => {
+                    input.onmidimessage = onMidiMessage;
+                    console.log(`MIDI Input: ${input.name} - ${input.manufacturer}`);
+                });
+
+                if (midiAccess.inputs.size === 0) {
+                    midiStatusElement.textContent = 'MIDI Status: No MIDI input devices found.';
+                }
+
+            } catch (error) {
+                // Specific handling for SecurityError
+                if (error.name === 'SecurityError') {
+                    midiStatusElement.textContent = 'MIDI Status: Access denied. MIDI is disabled by browser security policy (e.g., in an iframe or sandbox).';
+                    console.error('Failed to get MIDI access due to security policy:', error);
+                } else {
+                    midiStatusElement.textContent = `MIDI Status: Error connecting - ${error.message}`;
+                    console.error('Failed to get MIDI access:', error);
+                }
+            }
+        }
+
+        /**
+         * Handles MIDI device connection/disconnection.
+         */
+        function onMidiStateChange(event) {
+            console.log(`MIDI State Change: ${event.port.name} ${event.port.state}`);
+            if (event.port.type === 'input') {
+                if (event.port.state === 'connected') {
+                    event.port.onmidimessage = onMidiMessage;
+                    midiStatusElement.textContent = 'MIDI Status: Device connected.';
+                } else if (event.port.state === 'disconnected') {
+                    event.port.onmidimessage = null; // Remove listener
+                    midiStatusElement.textContent = 'MIDI Status: Device disconnected.';
+                }
+            }
+        }
+
+        /**
+         * Processes incoming MIDI messages and maps them to actions.
+         * @param {MIDIMessageEvent} event - The MIDI message event.
+         */
+        function onMidiMessage(event) {
+            const data = event.data;
+            const status = data[0];
+            const byte1 = data[1];
+            const byte2 = data[2];
+
+            // console.log(`MIDI message: Status=${status.toString(16)}, Data1=${byte1}, Data2=${byte2}`);
+
+            // Note On message (0x90-0x9F, where 0x90 is channel 1, 0x91 is channel 2, etc.)
+            if ((status & 0xF0) === 0x90) {
+                const noteNumber = byte1;
+                const velocity = byte2;
+                if (velocity > 0) { // Note On
+                    handleMidiNoteOn(noteNumber);
+                }
+            }
+            // Control Change message (0xB0-0xBF)
+            else if ((status & 0xF0) === 0xB0) {
+                const controllerNumber = byte1;
+                const controllerValue = byte2;
+                handleMidiControlChange(controllerNumber, controllerValue);
+            }
+        }
+
+        /**
+         * Maps MIDI Note On messages to button clicks.
+         * @param {number} noteNumber - The MIDI note number.
+         */
+        function handleMidiNoteOn(noteNumber) {
+            // Example mapping:
+            // C3 (MIDI 60) -> Start
+            // D3 (MIDI 62) -> Stop
+            // E3 (MIDI 64) -> Randomize Cells
+            // F3 (MIDI 65) -> Clear
+            // G3 (MIDI 67) -> Randomize Rules
+            // A3 (MIDI 69) -> Randomize Sonification
+            // B3 (MIDI 71) -> Toggle Sonification
+            // C4 (MIDI 72) -> Auto Zoom & Flow
+            // D4 (MIDI 74) -> Toggle Grid Mode (if gridRepeatCount > 1)
+            // E4 (MIDI 76) -> Toggle 3D Mode (if threeDStrength > 0)
+            if (noteNumber === 60) { // C3
+                startButton.click();
+            } else if (noteNumber === 62) { // D3
+                stopButton.click();
+            } else if (noteNumber === 64) { // E3
+                randomButton.click();
+            } else if (noteNumber === 65) { // F3
+                clearButton.click();
+            } else if (noteNumber === 67) { // G3
+                randomRulesButton.click();
+            } else if (noteNumber === 69) { // A3
+                randomSonificationButton.click();
+            } else if (noteNumber === 71) { // B3
+                toggleSonificationButton.click();
+            } else if (noteNumber === 72) { // C4
+                // Toggle auto zoom state
+                if (isAutoZooming) {
+                    isAutoZooming = false;
+                    if (!running) { // If game is also stopped, cancel animation frame
+                        if (animationFrameId) {
+                            cancelAnimationFrame(animationFrameId);
+                            animationFrameId = null;
+                        }
+                    }
+                } else {
+                    isAutoZooming = true;
+                    if (!running) { // If game is not already running, start the loop
+                        lastUpdateTime = performance.now();
+                        if (!animationFrameId) {
+                            animationFrameId = requestAnimationFrame(mainAnimationLoop);
+                        }
+                    }
+                }
+            } else if (noteNumber === 74) { // D4 - Toggle Grid Mode
+                if (gridRepeatCount === 1) { // If currently single image, go to 25 grid
+                    gridRepeatSlider.value = 25;
+                } else { // If currently grid, go back to single
+                    gridRepeatSlider.value = 1;
+                }
+                gridRepeatSlider.dispatchEvent(new Event('input')); // Trigger slider update
+            } else if (noteNumber === 76) { // E4 - Toggle 3D Mode
+                if (threeDStrength === 0) { // If currently 2D, go to full 3D
+                    threeDEffectSlider.value = 100;
+                } else { // If currently 3D, go back to 2D
+                    threeDEffectSlider.value = 0;
+                }
+                threeDEffectSlider.dispatchEvent(new Event('input')); // Trigger slider update
+            }
+        }
+
+        /**
+         * Maps MIDI Control Change messages to application parameters.
+         * @param {number} controllerNumber - The MIDI CC number.
+         * @param {number} controllerValue - The value (0-127) of the CC.
+         */
+        function handleMidiControlChange(controllerNumber, controllerValue) {
+            // Example mapping: CC #7 (Volume) to animation speed
+            if (controllerNumber === 7) { // Standard Volume controller
+                // Map 0-127 to a suitable interval range (e.g., 200ms down to 10ms)
+                // Invert the value so higher CC value means faster animation (smaller interval)
+                updateInterval = 200 - (controllerValue / 127) * 190; // Range from 10ms to 200ms
+                updateInterval = Math.max(10, updateInterval); // Ensure minimum interval
+                // console.log(`Animation speed (updateInterval): ${updateInterval.toFixed(2)}ms`);
+            } else if (controllerNumber === 10) { // Example: CC #10 (Pan) to Base Frequency
+                // Map 0-127 to frequency slider range (100-800)
+                frequencySlider.value = 100 + (controllerValue / 127) * 700;
+                baseFrequency = parseFloat(frequencySlider.value);
+            } else if (controllerNumber === 16) { // Example: CC #16 to Grid Repeat
+                gridRepeatSlider.value = Math.round((controllerValue / 127) * (gridRepeatSlider.max - gridRepeatSlider.min)) + parseInt(gridRepeatSlider.min);
+                gridRepeatSlider.dispatchEvent(new Event('input'));
+            } else if (controllerNumber === 17) { // Example: CC #17 to 3D Effect
+                threeDEffectSlider.value = Math.round((controllerValue / 127) * (threeDEffectSlider.max - threeDEffectSlider.min)) + parseInt(threeDEffectSlider.min);
+                threeDEffectSlider.dispatchEvent(new Event('input'));
+            }
+        }
+
+        // --- Initial Setup ---
+        window.onload = () => {
+            init3D(); // Initialize Three.js scene
+            setMainCanvasSize(); // Set initial size of canvases and renderer
+            window.addEventListener('resize', setMainCanvasSize); // Make responsive
+            mainCanvas.style.cursor = 'grab'; // Set initial cursor for dragging
+            updateLiveCellColors(); // Initialize colors from inputs
+            // Start the main animation loop
+            animationFrameId = requestAnimationFrame(mainAnimationLoop);
+            setupMidi(); // Initialize MIDI
+        };
+    </script>
+</body>
+</html>
